@@ -25,12 +25,18 @@ pub struct Config {
     /// the hardware caret), so the only visible effect is that one Left/Right
     /// press at such a boundary flips affinity in place rather than moving.
     pub caret_affinity: bool,
+    /// Whether the open file is reloaded when another program changes it on
+    /// disk. Only a document without unsaved changes is reloaded; otherwise
+    /// Pure keeps your version and flags the file as changed on disk. On by
+    /// default.
+    pub auto_reload: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             caret_affinity: true,
+            auto_reload: true,
         }
     }
 }
@@ -79,6 +85,14 @@ mod tests {
     fn caret_affinity_can_be_disabled() {
         let config: Config = toml::from_str("caret_affinity = false").unwrap();
         assert!(!config.caret_affinity);
+    }
+
+    #[test]
+    fn auto_reload_defaults_on_and_can_be_disabled() {
+        assert!(Config::default().auto_reload);
+        assert!(toml::from_str::<Config>("").unwrap().auto_reload);
+        let config: Config = toml::from_str("auto_reload = false").unwrap();
+        assert!(!config.auto_reload);
     }
 
     #[test]

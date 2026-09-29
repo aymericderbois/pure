@@ -196,6 +196,11 @@ setting has a default, so you only need to list the ones you want to change.
 # the run. Enabled by default. Set to false to make Left/Right step across such
 # boundaries in a single press instead.
 caret_affinity = true
+
+# Reload the open file when another program changes it on disk. Only a
+# document without unsaved changes is reloaded; otherwise Pure keeps your
+# version and marks the file "(changed on disk)" in the status bar.
+auto_reload = true
 ```
 
 ## What is FTML?
