@@ -12,6 +12,14 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ### Added
 
+- **Automatic reload** — when another program changes the open file, Pure
+  reloads it in place within half a second, as long as the document has no
+  unsaved changes; caret and scroll stay put and Ctrl+Z brings the previous
+  version back. Otherwise Pure keeps your text, marks the file
+  "(changed on disk)", and asks for a second Ctrl+S before overwriting it (and a
+  second Ctrl+Q before quitting). A deleted, unreadable, unparsable or emptied
+  file never replaces the text on screen. New setting `auto_reload` (default
+  `true`).
 - **Configuration file** — an optional TOML config at `~/.config/pure/config.toml`
   (honoring `XDG_CONFIG_HOME`); a missing, unreadable, or invalid file falls back
   to defaults. First setting: `caret_affinity` (default `true`) — an extra caret
@@ -62,6 +70,9 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ### Changed
 
+- `App::on_tick` now returns whether the screen needs a redraw, and the binary
+  opens files through the new `open_document` (which also returns the file's
+  on-disk baseline); `load_document` is unchanged.
 - **Editor/layout engine carved out to the shared `rutle` crate**, replacing
   Pure's homegrown layouter. Pure and its sibling editor Piki now share one
   structured-editor/layout core, and both resolve the same `tdoc` so

@@ -1827,6 +1827,41 @@ Pure saves documents with proper UTF-8 encoding, ensuring international characte
 
 There are no automatic saves or backup copies. Remember to save frequently (Ctrl+S) to avoid losing work.
 
+#### When the File Changes on Disk
+
+Pure watches the open file. When another program changes it — a script, a
+`git checkout`, another editor — and your document has no unsaved changes, Pure
+reloads it in place within about half a second. The caret stays in the same
+paragraph (moved to the nearest one if that paragraph is gone), the scroll
+position is kept as far as the new text allows, and any selection is cleared.
+The status bar shows `File changed on disk — reloaded (Ctrl+Z to undo)`: press
+**Ctrl+Z** to bring back the version you had before. That version then counts
+as an unsaved change, so Pure stops reloading until you save or reopen the file.
+
+If you have unsaved changes, Pure never replaces your text. It says so
+(`File changed on disk — keeping your unsaved changes`) once for each new
+version of the file, and marks the file `(changed on disk)` in the status bar.
+Pressing **Ctrl+S** then warns first
+(`File changed on disk — save again to overwrite it`). Press it again right
+away to overwrite the file with your version; if you type in between, or the
+file changes once more, Pure warns again instead. Likewise, **Ctrl+Q** asks for a
+second press before quitting, so the unsaved changes aren't lost by accident.
+To discard your changes and load the file instead, open it again with
+**Ctrl+O** and confirm discarding them.
+
+A few versions are never loaded over your text: a file that was deleted (the
+text stays, and Ctrl+S writes it back), one that can't be read or parsed, and
+one that became empty. Reloading also waits until menus and dialogs are
+closed.
+
+On file systems with coarse timestamps (FAT or exFAT drives, with a 2-second
+resolution, HFS+, some network shares), a change that keeps the file's size and
+lands within one timestamp step of Pure's own read or save can go unnoticed.
+
+To turn automatic reloading off, set `auto_reload = false` in the
+[configuration file](README.md#configuration). Saving still checks the disk
+first and warns before overwriting another program's change.
+
 ---
 
 ## Keyboard Shortcuts Reference

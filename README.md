@@ -174,6 +174,8 @@ pure webpage.html
 - Ctrl+S - Save (asks for a name when untitled)
 - Save As... in the File menu saves under a new name
 - Ctrl+Q - Quit
+- Files changed by another program reload automatically while the document
+  has no unsaved changes (Ctrl+Z brings the previous version back)
 
 **Special Features:**
 
@@ -268,6 +270,7 @@ Pure is under active development. Current status:
 - [x] Markdown import and export
 - [x] HTML import and export
 - [x] Gemini (Gemtext) import and export
+- [x] Automatic reload of files changed on disk
 
 **User Interface:**
 
