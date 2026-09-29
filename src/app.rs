@@ -773,6 +773,9 @@ pub struct App {
     /// changes. `None` disables watching (untitled, file absent when opened,
     /// apps built in memory such as the tests').
     disk: Option<DiskBaseline>,
+    /// The file on disk no longer matches the text on screen and wasn't
+    /// reloaded (unsaved changes, unreadable, empty): flagged in the status bar.
+    disk_changed: bool,
 }
 
 impl App {
@@ -820,6 +823,7 @@ impl App {
             interactive: true,
             config: Config::default(),
             disk: None,
+            disk_changed: false,
         }
     }
 
@@ -833,6 +837,7 @@ impl App {
     /// disables watching.
     pub fn set_disk_baseline(&mut self, disk: Option<DiskBaseline>) {
         self.disk = disk;
+        self.disk_changed = false;
     }
 
     /// Status-bar word count, memoized on the editor's revision so the
@@ -905,6 +910,7 @@ impl App {
                 if !disk.note_read_error(&now) {
                     return false;
                 }
+                self.disk_changed = true;
                 self.status(format!(
                     "File changed on disk but can't be read: {err} — text kept"
                 ));
@@ -919,10 +925,12 @@ impl App {
         // `touch`, an identical rewrite, or back to the version on screen.
         if disk.matches(&bytes) {
             disk.adopt(now);
-            return false;
+            // Redraw if this clears the flag.
+            return std::mem::take(&mut self.disk_changed);
         }
         if self.dirty {
             disk.adopt(now);
+            self.disk_changed = true;
             self.status("File changed on disk — keeping your unsaved changes");
             return true;
         }
@@ -949,8 +957,9 @@ impl App {
                     disk.adopt_content(now, &bytes);
                 }
                 if same {
-                    return false;
+                    return std::mem::take(&mut self.disk_changed);
                 }
+                self.disk_changed = false;
                 self.status("File changed on disk — reloaded (Ctrl+Z to undo)");
                 return true;
             }
@@ -958,6 +967,7 @@ impl App {
         if let Some(disk) = self.disk.as_mut() {
             disk.adopt(now);
         }
+        self.disk_changed = true;
         self.status(message);
         true
     }
@@ -1656,7 +1666,7 @@ impl App {
         let previous_format = self.document_format;
         // The baseline describes the old file; the new one is watched once saved.
         if previous_path.as_deref() != Some(path.as_path()) {
-            self.disk = None;
+            self.set_disk_baseline(None);
         }
         self.document_format = DocumentFormat::from_path(&path);
         self.file_path = Some(path);
@@ -1873,6 +1883,11 @@ impl App {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "Untitled".to_string());
         let dirty = if self.dirty { "*" } else { "" };
+        let disk = if self.disk_changed {
+            " (changed on disk)"
+        } else {
+            ""
+        };
         let lines = self.content_lines.max(1);
         let words = self.word_count();
         // Breadcrumb: the block-type chain from outermost container to the pseudo-leaf
@@ -1896,12 +1911,15 @@ impl App {
 
         // The filename keeps its own accent color; the rest inherits the bar style.
         let info = format!("{block_part}, {lines} lines, {words} words");
-        let left_len =
-            pos.chars().count() + name.chars().count() + dirty.len() + info.chars().count();
+        let left_len = pos.chars().count()
+            + name.chars().count()
+            + dirty.len()
+            + disk.len()
+            + info.chars().count();
 
         let mut spans = vec![
             Span::raw(pos),
-            Span::styled(format!("{name}{dirty}"), self.theme.filename_style()),
+            Span::styled(format!("{name}{dirty}{disk}"), self.theme.filename_style()),
             Span::raw(info),
         ];
 

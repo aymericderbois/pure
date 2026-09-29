@@ -375,3 +375,70 @@ fn save_as_to_another_file_watches_the_new_one() {
     assert_eq!(*document(&w.app), md("New file changed\n"));
     let _ = fs::remove_file(&other);
 }
+
+/// The status bar's text without a transient message. Asserting on the spans,
+/// not a rendered terminal row, keeps a long temp path from truncating it.
+fn status_bar_text(app: &mut App) -> String {
+    app.status_message = None;
+    app.status_line(200)
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn status_bar_flags_change_on_disk() {
+    let mut w = watched("md", "Hello\n");
+    w.app.insert_char('x');
+    w.app.after_edit(UndoKind::Other);
+    assert!(!status_bar_text(&mut w.app).contains("changed on disk"));
+    external_write(&w.path, "World\n");
+    assert!(settle(&mut w.app));
+    assert!(
+        status_bar_text(&mut w.app).contains("* (changed on disk)"),
+        "{}",
+        status_bar_text(&mut w.app)
+    );
+    // Saving writes our version: the file matches the screen again.
+    w.app.save().unwrap();
+    assert!(!status_bar_text(&mut w.app).contains("changed on disk"));
+    assert!(!w.app.on_tick());
+}
+
+#[test]
+fn external_revert_clears_the_flag() {
+    let mut w = watched("md", "Hello\n");
+    w.app.insert_char('x');
+    w.app.after_edit(UndoKind::Other);
+    external_write(&w.path, "World\n");
+    assert!(settle(&mut w.app));
+    assert!(w.app.disk_changed);
+    external_write(&w.path, "Hello\n");
+    assert!(
+        settle(&mut w.app),
+        "clearing the flag must redraw the status bar"
+    );
+    assert!(!status_bar_text(&mut w.app).contains("changed on disk"));
+    assert!(w.app.dirty, "the unsaved edit is still there");
+}
+
+/// Save As to another path drops the old file's baseline — and its flag, even
+/// when the save then fails and nothing is watched any more.
+#[test]
+fn failed_save_as_elsewhere_clears_the_flag() {
+    let mut w = watched("md", "Hello\n");
+    w.app.insert_char('x');
+    w.app.after_edit(UndoKind::Other);
+    external_write(&w.path, "World\n");
+    assert!(settle(&mut w.app));
+    assert!(w.app.disk_changed);
+    w.app
+        .save_as(PathBuf::from("/nonexistent-dir/pure-reload.md"));
+    assert!(
+        status(&w.app).starts_with("Save failed"),
+        "{}",
+        status(&w.app)
+    );
+    assert!(!status_bar_text(&mut w.app).contains("changed on disk"));
+}
