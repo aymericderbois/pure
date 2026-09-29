@@ -400,7 +400,8 @@ fn status_bar_flags_change_on_disk() {
         "{}",
         status_bar_text(&mut w.app)
     );
-    // Saving writes our version: the file matches the screen again.
+    // Saving (confirmed) writes our version: the file matches the screen again.
+    w.app.save().unwrap();
     w.app.save().unwrap();
     assert!(!status_bar_text(&mut w.app).contains("changed on disk"));
     assert!(!w.app.on_tick());
@@ -441,4 +442,161 @@ fn failed_save_as_elsewhere_clears_the_flag() {
         status(&w.app)
     );
     assert!(!status_bar_text(&mut w.app).contains("changed on disk"));
+}
+
+fn ctrl(ch: char) -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL))
+}
+
+/// Edit the document, then change the file behind Pure's back.
+fn edited_then_changed_on_disk() -> Watched {
+    let mut w = watched("md", "Hello\n");
+    w.app.insert_char('x');
+    w.app.after_edit(UndoKind::Other);
+    external_write(&w.path, "World\n");
+    w
+}
+
+#[test]
+fn save_asks_before_overwriting_a_change_on_disk() {
+    let mut w = edited_then_changed_on_disk();
+    assert!(settle(&mut w.app));
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert_eq!(
+        status(&w.app),
+        "File changed on disk — save again to overwrite it"
+    );
+    assert_eq!(fs::read_to_string(&w.path).unwrap(), "World\n");
+    assert!(w.app.dirty);
+}
+
+#[test]
+fn second_save_overwrites() {
+    let mut w = edited_then_changed_on_disk();
+    assert!(settle(&mut w.app));
+    w.app.handle_event(ctrl('s')).unwrap();
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert!(status(&w.app).starts_with("Saved"), "{}", status(&w.app));
+    assert_ne!(fs::read_to_string(&w.path).unwrap(), "World\n");
+    assert!(!w.app.dirty);
+    assert!(!w.app.disk_changed);
+}
+
+#[test]
+fn save_detects_a_change_not_yet_polled() {
+    let mut w = edited_then_changed_on_disk();
+    // No tick: the change is caught when saving.
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert_eq!(
+        status(&w.app),
+        "File changed on disk — save again to overwrite it"
+    );
+    assert_eq!(fs::read_to_string(&w.path).unwrap(), "World\n");
+}
+
+#[test]
+fn new_version_after_warning_warns_again() {
+    let mut w = edited_then_changed_on_disk();
+    w.app.handle_event(ctrl('s')).unwrap();
+    external_write(&w.path, "Newer\n");
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert_eq!(
+        status(&w.app),
+        "File changed on disk — save again to overwrite it"
+    );
+    assert_eq!(fs::read_to_string(&w.path).unwrap(), "Newer\n");
+}
+
+#[test]
+fn reverted_then_changed_again_warns_again() {
+    let mut w = edited_then_changed_on_disk();
+    assert!(settle(&mut w.app));
+    w.app.handle_event(ctrl('s')).unwrap();
+    external_write(&w.path, "Hello\n");
+    assert!(settle(&mut w.app), "back to the original: flag cleared");
+    external_write(&w.path, "Again\n");
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert_eq!(
+        status(&w.app),
+        "File changed on disk — save again to overwrite it"
+    );
+    assert_eq!(fs::read_to_string(&w.path).unwrap(), "Again\n");
+}
+
+#[test]
+fn save_as_to_another_file_is_not_guarded() {
+    let mut w = edited_then_changed_on_disk();
+    assert!(settle(&mut w.app));
+    let other = temp_path("md");
+    w.app.save_as(other.clone());
+    assert!(status(&w.app).starts_with("Saved"), "{}", status(&w.app));
+    assert!(other.exists());
+    let _ = fs::remove_file(&other);
+}
+
+#[test]
+fn auto_reload_off_still_guards_save() {
+    let mut w = watched("md", "Hello\n");
+    w.app.set_config(Config {
+        auto_reload: false,
+        ..Config::default()
+    });
+    external_write(&w.path, "World\n");
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert_eq!(
+        status(&w.app),
+        "File changed on disk — save again to overwrite it"
+    );
+    assert_eq!(fs::read_to_string(&w.path).unwrap(), "World\n");
+}
+
+#[test]
+fn quit_asks_once_when_unsaved_changes_and_disk_changed() {
+    let mut w = edited_then_changed_on_disk();
+    assert!(settle(&mut w.app));
+    w.app.handle_event(ctrl('s')).unwrap();
+    // The reflexive Ctrl+S, Ctrl+Q: the save didn't write, so don't quit yet.
+    w.app.handle_event(ctrl('q')).unwrap();
+    assert!(!w.app.should_quit());
+    assert_eq!(
+        status(&w.app),
+        "Unsaved changes and the file changed on disk — press Ctrl+Q again to quit"
+    );
+    w.app.handle_event(ctrl('q')).unwrap();
+    assert!(w.app.should_quit());
+}
+
+#[test]
+fn quit_is_immediate_otherwise() {
+    // Unsaved changes alone keep today's behavior.
+    let mut w = watched("md", "Hello\n");
+    w.app.insert_char('x');
+    w.app.after_edit(UndoKind::Other);
+    w.app.handle_event(ctrl('q')).unwrap();
+    assert!(w.app.should_quit());
+
+    // So does a file changed on disk under a clean document.
+    let mut w = watched("md", "Hello\n");
+    external_write(&w.path, "World\n");
+    w.app.handle_event(ctrl('q')).unwrap();
+    assert!(w.app.should_quit());
+}
+
+/// A clean document follows the disk: a Save warned about a change the next
+/// tick then reloads is moot, and the following Save writes without asking.
+#[test]
+fn warned_save_on_a_clean_document_then_reload() {
+    let mut w = watched("md", "Hello\n");
+    external_write(&w.path, "World\n");
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert_eq!(
+        status(&w.app),
+        "File changed on disk — save again to overwrite it"
+    );
+    assert!(settle(&mut w.app));
+    assert_eq!(*document(&w.app), md("World\n"));
+    assert!(w.app.confirm_overwrite.is_none());
+    w.app.handle_event(ctrl('s')).unwrap();
+    assert!(status(&w.app).starts_with("Saved"), "{}", status(&w.app));
+    assert_eq!(md(&fs::read_to_string(&w.path).unwrap()), md("World\n"));
 }

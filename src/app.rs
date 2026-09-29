@@ -776,6 +776,12 @@ pub struct App {
     /// The file on disk no longer matches the text on screen and wasn't
     /// reloaded (unsaved changes, unreadable, empty): flagged in the status bar.
     disk_changed: bool,
+    /// The version on disk the user was warned Save would overwrite: saving
+    /// again goes through only while the file is still that version.
+    confirm_overwrite: Option<DiskStamp>,
+    /// The user was warned that quitting drops unsaved changes while the file
+    /// changed on disk; quitting again goes through.
+    confirm_quit: bool,
 }
 
 impl App {
@@ -824,6 +830,8 @@ impl App {
             config: Config::default(),
             disk: None,
             disk_changed: false,
+            confirm_overwrite: None,
+            confirm_quit: false,
         }
     }
 
@@ -838,6 +846,8 @@ impl App {
     pub fn set_disk_baseline(&mut self, disk: Option<DiskBaseline>) {
         self.disk = disk;
         self.disk_changed = false;
+        self.confirm_overwrite = None;
+        self.confirm_quit = false;
     }
 
     /// Status-bar word count, memoized on the editor's revision so the
@@ -911,6 +921,7 @@ impl App {
                     return false;
                 }
                 self.disk_changed = true;
+                self.confirm_quit = false;
                 self.status(format!(
                     "File changed on disk but can't be read: {err} — text kept"
                 ));
@@ -931,6 +942,7 @@ impl App {
         if self.dirty {
             disk.adopt(now);
             self.disk_changed = true;
+            self.confirm_quit = false;
             self.status("File changed on disk — keeping your unsaved changes");
             return true;
         }
@@ -960,6 +972,8 @@ impl App {
                     return std::mem::take(&mut self.disk_changed);
                 }
                 self.disk_changed = false;
+                // A pending Save warning was about the text just replaced.
+                self.confirm_overwrite = None;
                 self.status("File changed on disk — reloaded (Ctrl+Z to undo)");
                 return true;
             }
@@ -968,6 +982,7 @@ impl App {
             disk.adopt(now);
         }
         self.disk_changed = true;
+        self.confirm_quit = false;
         self.status(message);
         true
     }
@@ -998,6 +1013,37 @@ impl App {
         }
     }
 
+    /// The version on disk when it holds something other than what Pure last
+    /// loaded or wrote — checked on every save, so a change not polled yet
+    /// (still settling, or made while a menu was open) is caught too.
+    fn disk_conflict(&mut self, path: &Path) -> Option<DiskStamp> {
+        let disk = self.disk.as_ref()?;
+        // Missing or not a file: saving recreates it, as before.
+        let fresh = DiskStamp::of(path).ok()?;
+        if fresh == *disk.stamp() && !self.disk_changed {
+            return None;
+        }
+        let differs = fs::read(path).map_or(true, |bytes| !disk.matches(&bytes));
+        if !differs {
+            return None;
+        }
+        self.disk_changed = true;
+        Some(fresh)
+    }
+
+    /// Quit — unless that drops unsaved changes while the file also changed on
+    /// disk, which asks for a second press first.
+    fn request_quit(&mut self) {
+        if self.dirty && self.disk_changed && !self.confirm_quit {
+            self.confirm_quit = true;
+            self.status(
+                "Unsaved changes and the file changed on disk — press Ctrl+Q again to quit",
+            );
+            return;
+        }
+        self.should_quit = true;
+    }
+
     fn overlay_active(&self) -> bool {
         self.context_menu.is_some()
             || self.menu_bar.is_some()
@@ -1020,6 +1066,8 @@ impl App {
     fn mark_dirty(&mut self) {
         self.dirty = true;
         self.confirm_new = false;
+        self.confirm_overwrite = None;
+        self.confirm_quit = false;
     }
 
     fn has_selection(&self) -> bool {
@@ -1559,7 +1607,7 @@ impl App {
             AppAction::Open => self.open_file_dialog(FileDialogKind::Open),
             AppAction::Save => self.save()?,
             AppAction::SaveAs => self.open_file_dialog(FileDialogKind::SaveAs),
-            AppAction::Quit => self.should_quit = true,
+            AppAction::Quit => self.request_quit(),
             AppAction::Undo => self.undo(),
             AppAction::Redo => self.redo(),
             AppAction::Cut => {
@@ -1625,6 +1673,15 @@ impl App {
             self.open_file_dialog(FileDialogKind::SaveAs);
             return Ok(());
         };
+        // Don't silently overwrite another program's change: warn once for
+        // each version on disk, then a second save goes through.
+        if let Some(fresh) = self.disk_conflict(&path)
+            && self.confirm_overwrite.as_ref() != Some(&fresh)
+        {
+            self.confirm_overwrite = Some(fresh);
+            self.status("File changed on disk — save again to overwrite it");
+            return Ok(());
+        }
         // Stamped before writing, to tell afterwards whether a failed write
         // still changed the file.
         let before = DiskStamp::of(&path).ok();
@@ -2586,7 +2643,7 @@ impl App {
 
         match (code, ctrl, alt) {
             // File / app
-            (KeyCode::Char('q'), true, _) => self.should_quit = true,
+            (KeyCode::Char('q'), true, _) => self.request_quit(),
             (KeyCode::Char('s'), true, _) => self.save()?,
             (KeyCode::Char('o'), true, _) => self.open_file_dialog(FileDialogKind::Open),
             (KeyCode::Char('n'), true, _) => self.new_document(),
