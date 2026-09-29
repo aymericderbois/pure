@@ -129,6 +129,35 @@ pub fn page_margin(width: i32) -> i32 {
     margin.min((width - 1) / 2).max(0)
 }
 
+/// Narrowest text measure (in cells) the text layout mode can shrink to.
+const MIN_TEXT_WIDTH: i32 = 20;
+/// Cells added or removed per `-`/`+` press in the text layout mode.
+const TEXT_WIDTH_STEP: i32 = 4;
+/// Cells the text column moves per Left/Right press in the text layout mode.
+const TEXT_SHIFT_STEP: i32 = 2;
+
+/// Place the text column in a content area `width` cells wide, returning
+/// `(left_margin, text_measure)`.
+///
+/// `text_width` overrides the responsive measure of [`page_margin`], and
+/// `shift` moves the column off-center (negative: less space on the left).
+/// Both are clamped so a one-cell gutter stays on each side. With no override
+/// and no shift this is exactly the layout of [`page_margin`].
+pub fn text_column(width: i32, text_width: Option<i32>, shift: i32) -> (i32, i32) {
+    if width <= 0 {
+        return (0, 0);
+    }
+    let auto_margin = page_margin(width);
+    let min_margin = auto_margin.min(1);
+    let max_measure = width - 2 * min_margin;
+    let measure = text_width
+        .unwrap_or(width - 2 * auto_margin)
+        .clamp(MIN_TEXT_WIDTH.min(max_measure), max_measure);
+    let free = width - measure;
+    let left = (free / 2 + shift).clamp(min_margin, free - min_margin);
+    (left, measure)
+}
+
 // ---------------------------------------------------------------------------
 // Context menu (model-agnostic): types, entry builders, navigation.
 // ---------------------------------------------------------------------------
@@ -706,6 +735,15 @@ pub struct App {
     /// User configuration (loaded from the TOML config file at startup;
     /// defaults until [`App::set_config`] is called).
     config: Config,
+    /// Text measure chosen in the text layout mode; `None` keeps the
+    /// responsive measure of [`page_margin`].
+    text_width: Option<i32>,
+    /// Offset of the text column from center, chosen in the text layout mode
+    /// (negative: less space on the left). See [`text_column`].
+    text_shift: i32,
+    /// Whether the text layout mode (F8) is active: Left/Right move the text
+    /// column, `-`/`+` change its width, until Enter or Esc.
+    layout_mode: bool,
 }
 
 impl App {
@@ -752,6 +790,9 @@ impl App {
             word_count_cache: None,
             interactive: true,
             config: Config::default(),
+            text_width: None,
+            text_shift: 0,
+            layout_mode: false,
         }
     }
 
@@ -883,6 +924,66 @@ impl App {
         } else {
             "Reveal codes disabled"
         });
+    }
+
+    /// Move the text column `delta` cells right (negative: left), leaving
+    /// less space on that side.
+    fn shift_text(&mut self, delta: i32) {
+        let width = self.last_text_area.width as i32;
+        let (left, measure) = text_column(width, self.text_width, self.text_shift + delta);
+        // Store the clamped shift, so presses past the edge don't pile up an
+        // offset that would have to be undone before the column moves back.
+        self.text_shift = left - (width - measure) / 2;
+    }
+
+    /// Widen the text column by `delta` cells (negative: narrow it), keeping
+    /// its offset from center.
+    fn resize_text(&mut self, delta: i32) {
+        let width = self.last_text_area.width as i32;
+        let (_, measure) = text_column(width, self.text_width, self.text_shift);
+        let (left, measure) = text_column(width, Some(measure + delta), self.text_shift);
+        self.text_width = Some(measure);
+        self.text_shift = left - (width - measure) / 2;
+        // Rewrapping moves the cursor's line; keep it on screen.
+        self.follow_cursor = true;
+    }
+
+    /// Back to the responsive, centered layout of [`page_margin`].
+    fn reset_text_layout(&mut self) {
+        self.text_width = None;
+        self.text_shift = 0;
+        self.follow_cursor = true;
+    }
+
+    /// The current text column as shown in the status bar, e.g.
+    /// "64 cols, shifted 6 left".
+    fn text_layout_summary(&self) -> String {
+        let width = self.last_text_area.width as i32;
+        let (left, measure) = text_column(width, self.text_width, self.text_shift);
+        let shift = left - (width - measure) / 2;
+        let place = match shift {
+            0 => "centered".to_string(),
+            s if s < 0 => format!("shifted {} left", -s),
+            s => format!("shifted {s} right"),
+        };
+        format!("{measure} cols, {place}")
+    }
+
+    fn handle_layout_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Left => self.shift_text(-TEXT_SHIFT_STEP),
+            KeyCode::Right => self.shift_text(TEXT_SHIFT_STEP),
+            KeyCode::Char('-') => self.resize_text(-TEXT_WIDTH_STEP),
+            // `=` too: it is the unshifted `+` key on QWERTY and AZERTY.
+            KeyCode::Char('+') | KeyCode::Char('=') => self.resize_text(TEXT_WIDTH_STEP),
+            KeyCode::Char('0') => self.reset_text_layout(),
+            KeyCode::Enter | KeyCode::Esc | KeyCode::F(8) => {
+                self.layout_mode = false;
+                let summary = self.text_layout_summary();
+                self.status(format!("Text layout: {summary}"));
+            }
+            _ => {}
+        }
     }
 
     fn backspace(&mut self) {
@@ -1360,6 +1461,7 @@ impl App {
             AppAction::InsertHorizontalRule => self.insert_horizontal_rule(),
             AppAction::FormattingMenu => self.open_context_menu(),
             AppAction::ToggleRevealCodes => self.toggle_reveal_codes(),
+            AppAction::TextLayout => self.layout_mode = true,
         }
         Ok(())
     }
@@ -1531,17 +1633,20 @@ impl App {
         self.last_viewport_height = text_area.height as usize;
         self.last_scrollbar_column = scrollbar_area.x;
 
+        // Responsive page margin: indent (and, on wide terminals, center) the
+        // content the way classic Pure did, then apply the user's width/shift.
+        // The engine only knows a symmetric padding, so the widget is narrowed
+        // and moved to make the larger margin; the smaller one stays padding.
+        let (left, measure) = text_column(text_area.width as i32, self.text_width, self.text_shift);
+        let right = text_area.width as i32 - left - measure;
+        let padding = left.min(right);
         self.display.resize(
-            text_area.x as i32,
+            text_area.x as i32 + left - padding,
             text_area.y as i32,
-            text_area.width as i32,
+            measure + 2 * padding,
             text_area.height as i32,
         );
-        // Responsive page margin: indent (and, on wide terminals, center) the
-        // content the way classic Pure did. The engine treats horizontal padding
-        // symmetrically, so this both gutters and centers in one shot.
-        self.display
-            .set_horizontal_padding(page_margin(text_area.width as i32));
+        self.display.set_horizontal_padding(padding);
 
         let follow = self.follow_cursor;
         let (page_bg, default_fg) = self.palette();
@@ -1652,6 +1757,15 @@ impl App {
 
     fn status_line(&mut self, width: usize) -> Line<'static> {
         self.prune_status_message();
+
+        // The layout mode takes over the whole bar: its keys and the current
+        // column, for as long as the mode lasts.
+        if self.layout_mode {
+            return Line::from(format!(
+                "Layout: ←→ move, -+ width, 0 reset, Enter done | {}",
+                self.text_layout_summary()
+            ));
+        }
 
         if let Some((message, _)) = &self.status_message {
             // Classic Pure kept the cursor position in front of a transient
@@ -2343,6 +2457,10 @@ impl App {
         if self.menu_bar.is_some() {
             return self.handle_menu_bar_key(key);
         }
+        if self.layout_mode {
+            self.handle_layout_key(key);
+            return Ok(());
+        }
 
         let code = key.code;
         let m = key.modifiers;
@@ -2381,6 +2499,8 @@ impl App {
             (KeyCode::Char('k'), true, _) => self.open_link_dialog(),
             // Reveal codes (the View menu lists F9 as the accelerator).
             (KeyCode::F(9), _, _) => self.toggle_reveal_codes(),
+            // Text layout mode (View > Text Layout...).
+            (KeyCode::F(8), _, _) => self.layout_mode = true,
             // Esc and Ctrl+Space open the formatting/context menu.
             (KeyCode::Char(' '), true, _) => self.open_context_menu(),
             (KeyCode::Esc, _, _) => self.open_context_menu(),
@@ -2825,7 +2945,10 @@ impl App {
         {
             return None;
         }
-        let x = (column - area.x) as i32;
+        // The widget may start right of the text area (see `text_column`); a
+        // click in the margin left of it gives a negative x, which the engine
+        // maps to the start of the line.
+        let x = column as i32 - self.display.x();
         let y = (row - area.y) as i32;
         Some(self.display.xy_to_position(x, y))
     }

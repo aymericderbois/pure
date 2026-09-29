@@ -59,6 +59,13 @@ While pre-1.0, the minor version is bumped for breaking changes.
   Gemtext writes a `---` line and plain text instead. The text survives, the
   structure does not, and Pure does not warn about this yet. `.html` and `.md`
   keep both. (#42)
+- **Text layout mode** — **F8** (or **View > Text Layout...**) enters a mode
+  where **Left** / **Right** move the text column off-center, leaving less
+  space on that side, **-** / **+** narrow or widen it (down to 20 columns), and
+  **0** restores the automatic centered layout; **Enter** or **Esc** leaves. The
+  status bar lists these keys and the current width and offset while the mode
+  lasts. A one-cell gutter always stays on each side. The setting lasts for the
+  session only.
 
 ### Changed
 

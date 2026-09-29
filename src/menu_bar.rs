@@ -24,6 +24,7 @@ pub enum AppAction {
     InsertHorizontalRule,
     FormattingMenu,
     ToggleRevealCodes,
+    TextLayout,
 }
 
 pub struct MenuBarItem {
@@ -120,11 +121,10 @@ pub const MENU_BAR: &[MenuDef] = &[
     MenuDef {
         title: "View",
         accel_index: 0,
-        entries: &[item(
-            "Reveal Codes",
-            Some("F9"),
-            AppAction::ToggleRevealCodes,
-        )],
+        entries: &[
+            item("Reveal Codes", Some("F9"), AppAction::ToggleRevealCodes),
+            item("Text Layout...", Some("F8"), AppAction::TextLayout),
+        ],
     },
 ];
 

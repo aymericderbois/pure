@@ -1410,7 +1410,7 @@ The menu bar stays hidden while you write. When activated, it appears at the top
 - **Edit** - Undo (Ctrl+Z), Redo (Ctrl+Y), Cut (Ctrl+X), Copy (Ctrl+C), Paste (Ctrl+V)
 - **Insert** - Line Break (Ctrl+J), Sibling Paragraph (Ctrl+P), Horizontal Rule
 - **Format** - Formatting Menu (Esc or Ctrl+Space)
-- **View** - Reveal Codes (F9)
+- **View** - Reveal Codes (F9), Text Layout (F8)
 
 #### To open the menu bar:
 
@@ -1829,6 +1829,30 @@ There are no automatic saves or backup copies. Remember to save frequently (Ctrl
 
 ---
 
+### Text Layout
+
+**Purpose:** Move the text away from the center of the screen, or change how wide it is.
+
+**Keyboard Shortcut:** F8 (or **View > Text Layout...**)
+
+#### To change the text layout:
+
+1. Press **F8**. The status bar lists the layout keys and shows the current width and position.
+2. Press **Left** or **Right** to move the text by two columns. Moving it left leaves less space on the left.
+3. Press **-** to narrow the text, or **+** (or **=**) to widen it, by four columns.
+4. Press **0** to return to the automatic, centered layout.
+5. Press **Enter** or **Esc** when done.
+
+#### Additional Information:
+
+While the layout mode is active, other keys are ignored: you cannot type or move the cursor.
+
+The text never gets narrower than 20 columns, and a one-column gutter always stays on each side.
+
+The layout lasts until you quit Pure. It is not saved with the document.
+
+---
+
 ## Keyboard Shortcuts Reference
 
 ### Navigation
@@ -1931,6 +1955,8 @@ definition
 ### Special Features
 
 **F9** - Toggle Reveal Codes
+
+**F8** - Text layout mode: **Left** / **Right** move the text, **-** / **+** change its width, **0** resets, **Enter** / **Esc** leave
 
 ---
 

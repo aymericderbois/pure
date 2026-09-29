@@ -171,22 +171,24 @@ fn page_margin_is_responsive() {
     }
 }
 
+/// The smallest left indent over the non-blank content rows (status bar
+/// excluded): the width of the left page margin.
+fn leading_spaces(app: &TestApp) -> usize {
+    let lines = app.buffer_lines();
+    let content = &lines[..lines.len().saturating_sub(1)]; // skip the status bar
+    content
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0)
+}
+
 /// Render the same document at several terminal widths and confirm the left
 /// gutter actually grows (content is indented and, when wide, centered) rather
 /// than always hugging the left edge.
 #[test]
 fn rendered_left_gutter_grows_with_width() {
-    let leading_spaces = |app: &TestApp| -> usize {
-        let lines = app.buffer_lines();
-        let content = &lines[..lines.len().saturating_sub(1)]; // skip the status bar
-        content
-            .iter()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.len() - l.trim_start().len())
-            .min()
-            .unwrap_or(0)
-    };
-
     let mut narrow = TestApp::new(50, 18, sample_document());
     narrow.draw();
     let mut wide = TestApp::new(140, 18, sample_document());
@@ -199,6 +201,246 @@ fn rendered_left_gutter_grows_with_width() {
         leading_spaces(&narrow),
         leading_spaces(&wide),
     );
+}
+
+/// Without a width override or shift, the text column is exactly the
+/// responsive layout of `page_margin`.
+#[test]
+fn text_column_defaults_to_page_margin() {
+    use crate::app::{page_margin, text_column};
+    for w in [1, 40, 59, 60, 99, 100, 140, 200] {
+        let margin = page_margin(w);
+        assert_eq!(
+            text_column(w, None, 0),
+            (margin, w - 2 * margin),
+            "width {w}"
+        );
+    }
+}
+
+/// Shift and width are clamped so a one-cell gutter stays on each side and the
+/// measure never drops below 20 columns.
+#[test]
+fn text_column_clamps_shift_and_width() {
+    use crate::app::text_column;
+    // 140 cells: a 92-column measure centered with 24-cell margins.
+    assert_eq!(text_column(140, None, -6), (18, 92));
+    assert_eq!(text_column(140, None, 6), (30, 92));
+    assert_eq!(text_column(140, None, -100), (1, 92));
+    assert_eq!(text_column(140, None, 100), (47, 92));
+    assert_eq!(text_column(140, Some(5), 0), (60, 20));
+    assert_eq!(text_column(140, Some(500), 0), (1, 138));
+    // A terminal narrower than the minimum measure still keeps its gutters.
+    assert_eq!(text_column(12, Some(5), 0), (1, 10));
+}
+
+/// The status bar row, where the layout mode shows its keys and the column.
+fn status_bar(app: &TestApp) -> String {
+    app.buffer_lines().last().cloned().unwrap_or_default()
+}
+
+#[test]
+fn layout_mode_arrows_shift_the_text_column() {
+    // 140 cells minus the scrollbar: a 93-column measure by default.
+    let mut app = TestApp::new(140, HEIGHT, sample_document());
+    let centered = leading_spaces(&app);
+    app.key(KeyCode::F(8));
+    assert!(
+        status_bar(&app)
+            .contains("Layout: ←→ move, -+ width, 0 reset, Enter done | 93 cols, centered"),
+        "the status bar shows the mode's keys: {}",
+        status_bar(&app)
+    );
+
+    for _ in 0..3 {
+        app.key(KeyCode::Left);
+    }
+    assert_eq!(leading_spaces(&app), centered - 6, "three steps left");
+
+    for _ in 0..6 {
+        app.key(KeyCode::Right);
+    }
+    assert_eq!(
+        leading_spaces(&app),
+        centered + 6,
+        "three steps right of center"
+    );
+    assert!(
+        status_bar(&app).contains("93 cols, shifted 6 right"),
+        "the status bar reports the offset: {}",
+        status_bar(&app)
+    );
+}
+
+#[test]
+fn layout_mode_stops_at_the_edge() {
+    let mut app = TestApp::new(140, HEIGHT, sample_document());
+    app.key(KeyCode::F(8));
+    for _ in 0..40 {
+        app.key(KeyCode::Left);
+    }
+    assert_eq!(leading_spaces(&app), 1, "a one-cell gutter stays");
+
+    // The shift was clamped, so one step back already moves the column.
+    app.key(KeyCode::Right);
+    assert_eq!(leading_spaces(&app), 3);
+}
+
+#[test]
+fn layout_mode_minus_narrows_the_text_column() {
+    let mut app = sample_app();
+    app.key(KeyCode::F(8));
+    for _ in 0..20 {
+        app.key(KeyCode::Char('-'));
+    }
+    let lines = app.buffer_lines();
+    assert!(
+        status_bar(&app).contains("| 20 cols, centered"),
+        "the width stops at its minimum: {}",
+        status_bar(&app)
+    );
+
+    let left = leading_spaces(&app);
+    let content = &lines[..lines.len() - 1];
+    let right_edge = content
+        .iter()
+        .map(|l| l.trim_end().chars().count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        right_edge <= left + 20,
+        "every row fits the 20-column measure (left={left}, right edge={right_edge})"
+    );
+    // The paragraph no longer fits on one row, so it wraps.
+    assert!(
+        !content
+            .iter()
+            .any(|l| l.contains("Pack the essentials before")),
+        "the long paragraph wraps"
+    );
+}
+
+#[test]
+fn layout_mode_plus_widens_and_zero_resets() {
+    // 72 cells minus the scrollbar: a 67-column measure by default.
+    let mut app = sample_app();
+    app.key(KeyCode::F(8));
+    app.key(KeyCode::Char('-'));
+    app.key(KeyCode::Char('-'));
+    app.key(KeyCode::Char('+'));
+    assert!(
+        status_bar(&app).contains("| 63 cols"),
+        "{}",
+        status_bar(&app)
+    );
+    // `=` is the unshifted `+` key.
+    app.key(KeyCode::Char('='));
+    assert!(
+        status_bar(&app).contains("| 67 cols"),
+        "{}",
+        status_bar(&app)
+    );
+
+    app.key(KeyCode::Char('-'));
+    app.key(KeyCode::Left);
+    assert!(
+        status_bar(&app).contains("| 63 cols, shifted 2 left"),
+        "{}",
+        status_bar(&app)
+    );
+    app.key(KeyCode::Char('0'));
+    assert!(
+        status_bar(&app).contains("| 67 cols, centered"),
+        "{}",
+        status_bar(&app)
+    );
+}
+
+#[test]
+fn layout_mode_ends_with_enter_or_esc() {
+    let mut app = sample_app();
+    let before = app.buffer_lines();
+    app.key(KeyCode::Right);
+    app.key(KeyCode::Right);
+    assert_eq!(status_col(&mut app), 3);
+
+    // In the mode the arrows move the column, not the cursor, and other keys
+    // are ignored: no text is typed.
+    app.key(KeyCode::F(8));
+    app.type_text("xy");
+    app.key(KeyCode::Left);
+    app.key(KeyCode::Enter);
+    // A 2-cell margin each side, so the one-cell gutter stops the step at 1.
+    assert!(
+        status_bar(&app).contains("Text layout: 67 cols, shifted 1 left"),
+        "leaving the mode reports the result: {}",
+        status_bar(&app)
+    );
+    assert_eq!(status_col(&mut app), 3, "the cursor stayed put");
+    assert!(
+        !app.buffer_lines().iter().any(|l| l.contains("xy")),
+        "typing in the mode inserts nothing"
+    );
+
+    // Esc leaves the mode instead of opening the formatting menu; `0` put the
+    // column back where it started.
+    app.key(KeyCode::F(8));
+    app.key(KeyCode::Char('0'));
+    app.key(KeyCode::Esc);
+    let lines = app.buffer_lines();
+    assert_eq!(lines[..lines.len() - 1], before[..before.len() - 1]);
+    assert!(!lines.iter().any(|l| l.contains("Paragraph type")));
+
+    // Out of the mode, the arrows move the cursor again.
+    app.key(KeyCode::Right);
+    assert_eq!(status_col(&mut app), 4);
+}
+
+#[test]
+fn view_menu_opens_the_layout_mode() {
+    let mut app = sample_app();
+    app.key_with(KeyCode::Char('v'), KeyModifiers::ALT);
+    app.key(KeyCode::Down);
+    app.key(KeyCode::Enter);
+    assert!(
+        status_bar(&app).starts_with("Layout: "),
+        "{}",
+        status_bar(&app)
+    );
+}
+
+#[test]
+fn text_layout_mode() {
+    let mut app = sample_app();
+    app.key(KeyCode::F(8));
+    for _ in 0..4 {
+        app.key(KeyCode::Char('-'));
+    }
+    for _ in 0..5 {
+        app.key(KeyCode::Left);
+    }
+    assert_svg("text_layout_mode", &mut app);
+}
+
+#[test]
+fn click_positions_cursor_in_a_shifted_column() {
+    let mut app = TestApp::new(140, HEIGHT, sample_document());
+    app.key(KeyCode::F(8));
+    for _ in 0..5 {
+        app.key(KeyCode::Left);
+    }
+    app.key(KeyCode::Enter);
+    let lines = app.buffer_lines();
+    let row = lines
+        .iter()
+        .position(|l| l.contains("essentials"))
+        .expect("paragraph drawn");
+    let byte = lines[row].find("essentials").expect("word in row") + 3;
+    let column = lines[row][..byte].chars().count() as u16;
+
+    app.click(column, row as u16);
+    let cursor = app.cursor_position().expect("cursor shown");
+    assert_eq!((cursor.x, cursor.y), (column, row as u16));
 }
 
 /// Checklist markers render as the classic bracketed text (`[✓] ` / `[ ] `)

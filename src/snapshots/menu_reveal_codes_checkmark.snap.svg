@@ -31,8 +31,14 @@
 <text x="300" y="55" fill="#ffffff" textLength="200" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ✓ Reveal Codes  F9 </text>
 <rect x="500" y="40" width="10" height="20" fill="#000000"/>
 <text x="500" y="55" fill="#e5e5e5" textLength="10" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<rect x="290" y="60" width="220" height="20" fill="#000000"/>
-<text x="290" y="75" fill="#e5e5e5" textLength="220" lengthAdjust="spacingAndGlyphs" xml:space="preserve">└────────────────────┘</text>
+<rect x="290" y="60" width="10" height="20" fill="#000000"/>
+<text x="290" y="75" fill="#e5e5e5" textLength="10" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<rect x="300" y="60" width="200" height="20" fill="#000000"/>
+<text x="300" y="75" fill="#ffffff" textLength="200" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> Text Layout...  F8 </text>
+<rect x="500" y="60" width="10" height="20" fill="#000000"/>
+<text x="500" y="75" fill="#e5e5e5" textLength="10" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<rect x="290" y="80" width="220" height="20" fill="#000000"/>
+<text x="290" y="95" fill="#e5e5e5" textLength="220" lengthAdjust="spacingAndGlyphs" xml:space="preserve">└────────────────────┘</text>
 <text x="0" y="155" fill="#d8d8d8" textLength="110" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Pack the </text>
 <rect x="110" y="140" width="60" height="20" fill="#e5e5e5"/>
 <text x="110" y="155" fill="#000000" textLength="60" lengthAdjust="spacingAndGlyphs" xml:space="preserve">[Bold&gt;</text>
