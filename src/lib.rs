@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod config;
+pub mod disk_watch;
 pub mod file_dialog;
 pub mod link_dialog;
 pub mod menu_bar;
