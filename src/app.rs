@@ -769,6 +769,10 @@ pub struct App {
     /// User configuration (loaded from the TOML config file at startup;
     /// defaults until [`App::set_config`] is called).
     config: Config,
+    /// What Pure last loaded from or wrote to `file_path`, to notice outside
+    /// changes. `None` disables watching (untitled, file absent when opened,
+    /// apps built in memory such as the tests').
+    disk: Option<DiskBaseline>,
 }
 
 impl App {
@@ -815,6 +819,7 @@ impl App {
             word_count_cache: None,
             interactive: true,
             config: Config::default(),
+            disk: None,
         }
     }
 
@@ -822,6 +827,12 @@ impl App {
     /// before the first draw; tests keep the defaults.
     pub fn set_config(&mut self, config: Config) {
         self.config = config;
+    }
+
+    /// Watch the open file against `disk` (see [`open_document`]); `None`
+    /// disables watching.
+    pub fn set_disk_baseline(&mut self, disk: Option<DiskBaseline>) {
+        self.disk = disk;
     }
 
     /// Status-bar word count, memoized on the editor's revision so the
@@ -850,11 +861,138 @@ impl App {
         self.status_message.is_some()
     }
 
-    /// Periodic housekeeping; returns whether the screen needs a redraw.
+    /// Periodic housekeeping — expire the status message, poll the open file
+    /// on disk; returns whether the screen needs a redraw.
     pub fn on_tick(&mut self) -> bool {
         let had_message = self.status_message.is_some();
         self.prune_status_message();
-        had_message && self.status_message.is_none()
+        let expired = had_message && self.status_message.is_none();
+        // `|`, not `||`: the disk is polled on every tick.
+        self.check_disk() | expired
+    }
+
+    /// Reload the document when another program changed the file — only once
+    /// the file has stopped changing, and only if the document has no unsaved
+    /// changes. A version that can't be read, doesn't parse or is empty never
+    /// replaces the text. Returns whether anything visible changed.
+    fn check_disk(&mut self) -> bool {
+        // Menus and dialogs hold cursor-relative state (a link's tree path,
+        // context-menu entries): wait until they are closed.
+        if !self.config.auto_reload || self.overlay_active() {
+            return false;
+        }
+        let (Some(path), Some(disk)) = (self.file_path.clone(), self.disk.as_mut()) else {
+            return false;
+        };
+        // Missing, unreadable or not a file (deleted, mid-rename): keep the
+        // text and the baseline, and look again next tick.
+        let Ok(stamp) = DiskStamp::of(&path) else {
+            disk.forget_pending();
+            return false;
+        };
+        let Some(now) = disk.observe(stamp) else {
+            return false;
+        };
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                disk.forget_pending();
+                return false;
+            }
+            // Possibly transient (a lock, a network hiccup): the change stays
+            // pending and the read is retried each tick, reported once.
+            Err(err) => {
+                if !disk.note_read_error(&now) {
+                    return false;
+                }
+                self.status(format!(
+                    "File changed on disk but can't be read: {err} — text kept"
+                ));
+                return true;
+            }
+        };
+        // The file moved on while we read it: start over.
+        if DiskStamp::of(&path).ok().as_ref() != Some(&now) {
+            disk.forget_pending();
+            return false;
+        }
+        // `touch`, an identical rewrite, or back to the version on screen.
+        if disk.matches(&bytes) {
+            disk.adopt(now);
+            return false;
+        }
+        if self.dirty {
+            disk.adopt(now);
+            self.status("File changed on disk — keeping your unsaved changes");
+            return true;
+        }
+        let parsed = std::str::from_utf8(&bytes)
+            .map_err(|err| err.to_string())
+            .and_then(|text| {
+                parse_document(text.to_string(), self.document_format)
+                    .map_err(|err| err.to_string())
+            });
+        let current = self.display.editor().document();
+        let message = match parsed {
+            Err(err) => format!("File changed on disk but can't be read: {err} — text kept"),
+            // A writer caught between truncating and writing, most likely.
+            Ok(document) if document.is_empty() && !current.is_empty() => {
+                "File on disk is now empty — text kept".to_string()
+            }
+            Ok(document) => {
+                // Reformatted to the same document: nothing to show.
+                let same = document == *current;
+                if !same {
+                    self.reload_in_place(document);
+                }
+                if let Some(disk) = self.disk.as_mut() {
+                    disk.adopt_content(now, &bytes);
+                }
+                if same {
+                    return false;
+                }
+                self.status("File changed on disk — reloaded (Ctrl+Z to undo)");
+                return true;
+            }
+        };
+        if let Some(disk) = self.disk.as_mut() {
+            disk.adopt(now);
+        }
+        self.status(message);
+        true
+    }
+
+    /// Swap in `document` read back from disk as one undoable step, keeping the
+    /// caret (clamped to the new tree) and the scroll position.
+    fn reload_in_place(&mut self, document: Document) {
+        let now = Instant::now();
+        let editor = self.display.editor_mut();
+        // The document is clean, so this only refreshes the undo baseline's
+        // caret: Undo then returns to where the user was.
+        editor.commit_undo_step(UndoKind::Other, now);
+        *editor.document_mut() = document;
+        editor.after_external_change();
+        // `after_external_change` clamps the caret, not the selection.
+        editor.clear_selection();
+        editor.commit_undo_step(UndoKind::Other, now);
+        self.drag_state = None;
+        if !self.follow_cursor {
+            // Drawing doesn't clamp a manual scroll position: do it here.
+            self.with_ctx(|display, ctx| {
+                display.draw(ctx);
+                let max = (display.content_height() - display.h()).max(0);
+                if display.scroll_offset() > max {
+                    display.set_scroll(max);
+                }
+            });
+        }
+    }
+
+    fn overlay_active(&self) -> bool {
+        self.context_menu.is_some()
+            || self.menu_bar.is_some()
+            || self.file_dialog.is_some()
+            || self.link_dialog.is_some()
     }
 
     fn prune_status_message(&mut self) {
@@ -1438,7 +1576,7 @@ impl App {
             self.status("Unsaved changes — select New again to discard them");
             return;
         }
-        self.replace_document(Document::new(), None, DocumentFormat::Ftml);
+        self.replace_document(Document::new(), None, DocumentFormat::Ftml, None);
         self.status("New document");
     }
 
@@ -1447,6 +1585,7 @@ impl App {
         document: Document,
         path: Option<PathBuf>,
         format: DocumentFormat,
+        disk: Option<DiskBaseline>,
     ) {
         self.display.editor_mut().set_document(document);
         self.display.set_scroll(0);
@@ -1455,13 +1594,16 @@ impl App {
         self.dirty = false;
         self.confirm_new = false;
         self.follow_cursor = true;
+        self.set_disk_baseline(disk);
     }
 
     fn open_file(&mut self, path: PathBuf) {
-        match load_document(&path) {
-            Ok((document, format, message)) => {
-                let label = message.unwrap_or_else(|| format!("Opened {}", path.display()));
-                self.replace_document(document, Some(path), format);
+        match open_document(&path) {
+            Ok(loaded) => {
+                let label = loaded
+                    .message
+                    .unwrap_or_else(|| format!("Opened {}", path.display()));
+                self.replace_document(loaded.document, Some(path), loaded.format, loaded.disk);
                 self.status(label);
             }
             Err(err) => self.status(format!("Open failed: {err}")),
@@ -1473,16 +1615,36 @@ impl App {
             self.open_file_dialog(FileDialogKind::SaveAs);
             return Ok(());
         };
+        // Stamped before writing, to tell afterwards whether a failed write
+        // still changed the file.
+        let before = DiskStamp::of(&path).ok();
         let result = serialize_document(self.display.editor().document(), self.document_format)
-            .and_then(|bytes| fs::write(&path, bytes).map_err(Into::into));
+            .and_then(|bytes| {
+                fs::write(&path, &bytes)?;
+                Ok(bytes)
+            });
 
         match result {
-            Ok(()) => {
+            Ok(bytes) => {
                 self.dirty = false;
+                // Our own write is the new version on screen, not an outside change.
+                let stamp = DiskStamp::of(&path).ok();
+                self.set_disk_baseline(stamp.map(|stamp| DiskBaseline::new(stamp, &bytes)));
                 self.status(format!("Saved {}", path.display()));
                 Ok(())
             }
             Err(err) => {
+                // Keep watching. If the failed write still changed the file (a
+                // partial write, a full disk), take the new stamp but not its
+                // contents, and mark the text as unsaved: that fragment must
+                // never be reloaded over it.
+                if let Some(disk) = self.disk.as_mut()
+                    && let Ok(stamp) = DiskStamp::of(&path)
+                    && before.as_ref() != Some(&stamp)
+                {
+                    disk.adopt(stamp);
+                    self.dirty = true;
+                }
                 self.status(format!("Save failed: {err}"));
                 Ok(())
             }
@@ -1492,6 +1654,10 @@ impl App {
     fn save_as(&mut self, path: PathBuf) {
         let previous_path = self.file_path.take();
         let previous_format = self.document_format;
+        // The baseline describes the old file; the new one is watched once saved.
+        if previous_path.as_deref() != Some(path.as_path()) {
+            self.disk = None;
+        }
         self.document_format = DocumentFormat::from_path(&path);
         self.file_path = Some(path);
         if self.save().is_err() || self.file_path.is_none() {
@@ -1618,10 +1784,7 @@ impl App {
 
         self.draw_scrollbar(frame, scrollbar_area);
 
-        let overlay_active = self.context_menu.is_some()
-            || self.menu_bar.is_some()
-            || self.file_dialog.is_some()
-            || self.link_dialog.is_some();
+        let overlay_active = self.overlay_active();
 
         if !overlay_active
             && let Some((x, y)) = cursor_pos
@@ -2980,3 +3143,7 @@ fn count_words(doc: &Document) -> usize {
 #[cfg(test)]
 #[path = "app_tests.rs"]
 mod app_tests;
+
+#[cfg(test)]
+#[path = "reload_tests.rs"]
+mod reload_tests;
