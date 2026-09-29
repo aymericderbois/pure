@@ -120,15 +120,12 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
             needs_redraw = true;
         }
 
-        // Handle tick for status message updates
+        // Tick: expire status messages; redraw only when something changed.
         if last_tick.elapsed() >= tick_rate {
-            let had_message_before = app.has_status_message();
-            app.on_tick();
-            last_tick = Instant::now();
-            // Only redraw if status message changed (was pruned)
-            if had_message_before && !app.has_status_message() {
+            if app.on_tick() {
                 needs_redraw = true;
             }
+            last_tick = Instant::now();
         }
     }
 

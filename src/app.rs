@@ -850,8 +850,11 @@ impl App {
         self.status_message.is_some()
     }
 
-    pub fn on_tick(&mut self) {
+    /// Periodic housekeeping; returns whether the screen needs a redraw.
+    pub fn on_tick(&mut self) -> bool {
+        let had_message = self.status_message.is_some();
         self.prune_status_message();
+        had_message && self.status_message.is_none()
     }
 
     fn prune_status_message(&mut self) {

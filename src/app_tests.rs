@@ -341,3 +341,19 @@ fn open_document_reads_a_fifo_without_watching_it() {
     assert!(loaded.disk.is_none());
     assert_eq!(doc_text(&loaded.document), "Piped");
 }
+
+/// The binary redraws after a tick only when `on_tick` says so: an expiring
+/// status message must report it, and a quiet tick must not.
+#[test]
+fn on_tick_reports_an_expired_status_message() {
+    let mut app = App::new(Document::new(), None, DocumentFormat::Ftml, None);
+    assert!(!app.on_tick(), "nothing to expire");
+    app.status_message = Some(("Hello".to_string(), Instant::now()));
+    assert!(!app.on_tick(), "still fresh");
+    app.status_message = Some((
+        "Hello".to_string(),
+        Instant::now() - STATUS_TIMEOUT - Duration::from_millis(1),
+    ));
+    assert!(app.on_tick(), "expired: redraw");
+    assert!(app.status_message.is_none());
+}
