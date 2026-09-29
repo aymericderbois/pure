@@ -291,3 +291,53 @@ fn words_inside_tables_and_nested_checklists_are_counted() {
     .expect("parse checklist");
     assert_eq!(count_words(&checklist), 4, "nesting counts at every depth");
 }
+
+/// `open_document` keeps `load_document`'s behavior (it's what the binary and
+/// the Open dialog now call) and adds the disk baseline only for regular files
+/// that exist.
+#[test]
+fn open_document_matches_load_document() {
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+
+    let existing = dir.join(format!("pure_open_test_{pid}.md"));
+    fs::write(&existing, "# Title\n\nHello\n").unwrap();
+    let broken = dir.join(format!("pure_open_test_{pid}.ftml"));
+    fs::write(&broken, "<p>Hello <b>world</p>\n").unwrap();
+    let missing = dir.join(format!("pure_open_test_{pid}_missing.md"));
+
+    for path in [&existing, &broken, &missing] {
+        let loaded = open_document(path).expect("open document");
+        let (document, format, message) = load_document(path).expect("load document");
+        assert_eq!(loaded.document, document, "{}", path.display());
+        assert_eq!(loaded.format, format);
+        assert_eq!(loaded.message, message);
+        assert_eq!(loaded.disk.is_some(), path.exists(), "{}", path.display());
+    }
+    let loaded = open_document(&existing).unwrap();
+    assert!(loaded.disk.unwrap().matches(b"# Title\n\nHello\n"));
+
+    let _ = fs::remove_file(&existing);
+    let _ = fs::remove_file(&broken);
+}
+
+/// `pure <(cmd)` hands Pure a pipe: it must still open (read to the end, as
+/// before), just without being watched.
+#[cfg(unix)]
+#[test]
+fn open_document_reads_a_fifo_without_watching_it() {
+    let path = std::env::temp_dir().join(format!("pure_open_fifo_{}.md", std::process::id()));
+    let _ = fs::remove_file(&path);
+    let made = std::process::Command::new("mkfifo").arg(&path).status();
+    if !made.is_ok_and(|status| status.success()) {
+        eprintln!("mkfifo unavailable, skipping");
+        return;
+    }
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || fs::write(writer_path, "Piped\n"));
+    let loaded = open_document(&path).expect("open fifo");
+    writer.join().unwrap().unwrap();
+    let _ = fs::remove_file(&path);
+    assert!(loaded.disk.is_none());
+    assert_eq!(doc_text(&loaded.document), "Piped");
+}

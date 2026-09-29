@@ -41,6 +41,7 @@ use tdoc::ftml::{Writer, parse};
 use tdoc::{Document, InlineStyle, ParagraphType, gemini, html, markdown};
 
 use crate::config::Config;
+use crate::disk_watch::{DiskBaseline, DiskStamp};
 use crate::file_dialog::{FileDialogKind, FileDialogResult, FileDialogState};
 use crate::link_dialog::{LinkDialogState, LinkField};
 use crate::menu_bar::{
@@ -80,28 +81,90 @@ impl DocumentFormat {
     }
 }
 
+// `&PathBuf` rather than `&Path`: the public signature predates `open_document`.
+#[allow(clippy::ptr_arg)]
 pub fn load_document(path: &PathBuf) -> Result<(Document, DocumentFormat, Option<String>)> {
+    open_document(path).map(|loaded| (loaded.document, loaded.format, loaded.message))
+}
+
+/// A document opened from disk, with what's needed to watch the file.
+pub struct LoadedDocument {
+    pub document: Document,
+    pub format: DocumentFormat,
+    /// Status to show instead of "Opened …" (new file, parse error).
+    pub message: Option<String>,
+    /// The version read, to notice outside changes. `None` when the file
+    /// didn't exist or isn't a regular file (e.g. `pure <(cmd)`).
+    pub disk: Option<DiskBaseline>,
+}
+
+/// Open `path` like [`load_document`] — a missing file or a parse error yields
+/// an empty document and a message — and also record its on-disk state.
+pub fn open_document(path: &Path) -> Result<LoadedDocument> {
     let format = DocumentFormat::from_path(path);
-    if path.exists() {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let parsed = match format {
-            DocumentFormat::Ftml => parse(std::io::Cursor::new(content))
-                .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { Box::new(err) }),
-            DocumentFormat::Markdown => markdown::parse(std::io::Cursor::new(content)),
-            DocumentFormat::Html => html::parse(std::io::Cursor::new(content)),
-            DocumentFormat::Gemini => gemini::parse(std::io::Cursor::new(content)),
-        };
-        match parsed {
-            Ok(doc) => Ok((doc, format, None)),
-            Err(err) => {
-                let message = format!("Parse error: {err}. Starting with empty document.");
-                Ok((Document::new(), format, Some(message)))
-            }
-        }
-    } else {
-        Ok((Document::new(), format, Some("New document".to_string())))
+    if !path.exists() {
+        return Ok(LoadedDocument {
+            document: Document::new(),
+            format,
+            message: Some("New document".to_string()),
+            disk: None,
+        });
     }
+    // Stamp before reading: a change racing the read then shows on the next
+    // poll. Never fatal — a pipe or device still opens, it just isn't watched.
+    let stamp = DiskStamp::of(path).ok();
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let disk = stamp.map(|stamp| DiskBaseline::new(stamp, content.as_bytes()));
+    let (document, message) = match parse_document(content, format) {
+        Ok(document) => (document, None),
+        Err(err) => (
+            Document::new(),
+            Some(format!("Parse error: {err}. Starting with empty document.")),
+        ),
+    };
+    Ok(LoadedDocument {
+        document,
+        format,
+        message,
+        disk,
+    })
+}
+
+/// Parse `content` as `format`, reporting errors as-is (unlike
+/// [`open_document`], which falls back to an empty document).
+fn parse_document(content: String, format: DocumentFormat) -> tdoc::Result<Document> {
+    let reader = std::io::Cursor::new(content);
+    match format {
+        DocumentFormat::Ftml => parse(reader)
+            .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { Box::new(err) }),
+        DocumentFormat::Markdown => markdown::parse(reader),
+        DocumentFormat::Html => html::parse(reader),
+        DocumentFormat::Gemini => gemini::parse(reader),
+    }
+}
+
+/// The bytes [`App::save`] writes for `document` in `format`.
+fn serialize_document(document: &Document, format: DocumentFormat) -> Result<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::new();
+    match format {
+        DocumentFormat::Ftml => {
+            let text = Writer::new()
+                .write_to_string(document)
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            out = text.into_bytes();
+        }
+        DocumentFormat::Markdown => {
+            markdown::write(&mut out, document).map_err(|err| anyhow::anyhow!("{err}"))?;
+        }
+        DocumentFormat::Html => {
+            html::write_document(&mut out, document).map_err(|err| anyhow::anyhow!("{err}"))?;
+        }
+        DocumentFormat::Gemini => {
+            gemini::write(&mut out, document).map_err(|err| anyhow::anyhow!("{err}"))?;
+        }
+    }
+    Ok(out)
 }
 
 /// Responsive horizontal page margin (in cells) for a content area `width` cells
@@ -1407,34 +1470,8 @@ impl App {
             self.open_file_dialog(FileDialogKind::SaveAs);
             return Ok(());
         };
-        let document = self.display.editor().document();
-        let result: Result<()> = (|| {
-            match self.document_format {
-                DocumentFormat::Ftml => {
-                    let text = Writer::new()
-                        .write_to_string(document)
-                        .map_err(|err| anyhow::anyhow!("{err}"))?;
-                    fs::write(&path, text)?;
-                }
-                DocumentFormat::Markdown => {
-                    let mut out: Vec<u8> = Vec::new();
-                    markdown::write(&mut out, document).map_err(|err| anyhow::anyhow!("{err}"))?;
-                    fs::write(&path, out)?;
-                }
-                DocumentFormat::Html => {
-                    let mut out: Vec<u8> = Vec::new();
-                    html::write_document(&mut out, document)
-                        .map_err(|err| anyhow::anyhow!("{err}"))?;
-                    fs::write(&path, out)?;
-                }
-                DocumentFormat::Gemini => {
-                    let mut out: Vec<u8> = Vec::new();
-                    gemini::write(&mut out, document).map_err(|err| anyhow::anyhow!("{err}"))?;
-                    fs::write(&path, out)?;
-                }
-            }
-            Ok(())
-        })();
+        let result = serialize_document(self.display.editor().document(), self.document_format)
+            .and_then(|bytes| fs::write(&path, bytes).map_err(Into::into));
 
         match result {
             Ok(()) => {
