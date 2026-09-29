@@ -19,7 +19,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use pure_tui::app::{App, DocumentFormat, load_document};
+use pure_tui::app::{App, DocumentFormat, open_document};
 use pure_tui::config::Config;
 use tdoc::Document;
 
@@ -31,16 +31,22 @@ fn run() -> Result<()> {
     // Without an argument, start with an untitled document; saving it asks
     // for a name through the Save As dialog.
     let path = env::args().nth(1).map(PathBuf::from);
-    let (document, format, initial_status) = match &path {
-        Some(path) => load_document(path)?,
+    let (document, format, initial_status, disk) = match &path {
+        Some(path) => {
+            let loaded = open_document(path)?;
+            (loaded.document, loaded.format, loaded.message, loaded.disk)
+        }
         None => (
             Document::new(),
             DocumentFormat::Ftml,
             Some("New document".to_string()),
+            None,
         ),
     };
     let mut app = App::new(document, path, format, initial_status);
     app.set_config(Config::load());
+    // Watch the file for changes made by other programs.
+    app.set_disk_baseline(disk);
 
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -120,15 +126,12 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
             needs_redraw = true;
         }
 
-        // Handle tick for status message updates
+        // Tick: expire status messages; redraw only when something changed.
         if last_tick.elapsed() >= tick_rate {
-            let had_message_before = app.has_status_message();
-            app.on_tick();
-            last_tick = Instant::now();
-            // Only redraw if status message changed (was pruned)
-            if had_message_before && !app.has_status_message() {
+            if app.on_tick() {
                 needs_redraw = true;
             }
+            last_tick = Instant::now();
         }
     }
 

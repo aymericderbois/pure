@@ -174,6 +174,8 @@ pure webpage.html
 - Ctrl+S - Save (asks for a name when untitled)
 - Save As... in the File menu saves under a new name
 - Ctrl+Q - Quit
+- Files changed by another program reload automatically while the document
+  has no unsaved changes (Ctrl+Z brings the previous version back)
 
 **Special Features:**
 
@@ -196,6 +198,11 @@ setting has a default, so you only need to list the ones you want to change.
 # the run. Enabled by default. Set to false to make Left/Right step across such
 # boundaries in a single press instead.
 caret_affinity = true
+
+# Reload the open file when another program changes it on disk. Only a
+# document without unsaved changes is reloaded; otherwise Pure keeps your
+# version and marks the file "(changed on disk)" in the status bar.
+auto_reload = true
 ```
 
 ## What is FTML?
@@ -263,6 +270,7 @@ Pure is under active development. Current status:
 - [x] Markdown import and export
 - [x] HTML import and export
 - [x] Gemini (Gemtext) import and export
+- [x] Automatic reload of files changed on disk
 
 **User Interface:**
 

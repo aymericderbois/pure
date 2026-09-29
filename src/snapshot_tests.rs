@@ -1546,6 +1546,7 @@ fn caret_affinity_setting_controls_the_boundary_stop() {
         link_document(),
         Config {
             caret_affinity: false,
+            ..Config::default()
         },
     );
     for _ in 0..11 {
